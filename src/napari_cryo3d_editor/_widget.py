@@ -1797,6 +1797,25 @@ class RenderTab(QWidget):
         g6.setLayout(l6)
         layout.addWidget(g6)
 
+        # ── 7. SAVE AS MRC ────────────────────────────────────────────
+        g7 = _group("7 ▸ SAVE AS MRC")
+        l7 = QVBoxLayout()
+        l7.addWidget(_info("Exports the selected layer to a new .mrc file "
+                           "(voxel size written to header)"))
+        row = QHBoxLayout()
+        self.chk_binary_mrc = QCheckBox("Binary mask (Labels → 0/1)")
+        self.chk_binary_mrc.setChecked(False)
+        self.chk_binary_mrc.setStyleSheet(f"color:{TEXT_MAIN};")
+        row.addWidget(self.chk_binary_mrc)
+        l7.addLayout(row)
+        btn_mrc = _btn("💾  Save as MRC…", "run")
+        btn_mrc.clicked.connect(self._save_mrc)
+        l7.addWidget(btn_mrc)
+        self.lbl_mrc = _info_box("—")
+        l7.addWidget(self.lbl_mrc)
+        g7.setLayout(l7)
+        layout.addWidget(g7)
+
         layout.addStretch()
         self.setLayout(layout)
         self._refresh_layers()
@@ -2116,6 +2135,56 @@ class RenderTab(QWidget):
             self.lbl_snap.setText(f"Saved: {p.name}  ({img.shape[1]}×{img.shape[0]} px)")
             log(f"Snapshot saved: {p.name}", params={"shape": img.shape})
             show_info(f"Snapshot saved: {p}")
+        except Exception as e:
+            show_error(str(e))
+
+    def _save_mrc(self):
+        """Save the selected Image/Labels layer to a new .mrc file,
+        writing the voxel size into the MRC header."""
+        if not HAS_MRCFILE:
+            return show_error("Install mrcfile to export MRC files "
+                              "(pip install mrcfile)")
+        layer = self._get_layer()
+        if layer is None:
+            return show_warning("Select a layer first")
+
+        is_lbl = self._is_labels(layer)
+        default = f"{layer.name}.mrc"
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save as MRC", default, "MRC Files (*.mrc);;All (*)")
+        if not path:
+            return
+        if not path.lower().endswith(".mrc"):
+            path += ".mrc"
+
+        try:
+            data = np.asarray(layer.data)
+            if is_lbl:
+                if self.chk_binary_mrc.isChecked():
+                    out = (data > 0).astype(np.int8)
+                else:
+                    out = data.astype(np.int16)
+            else:
+                out = data.astype(np.float32)
+            # MRC expects C-contiguous arrays
+            out = np.ascontiguousarray(out)
+
+            with mrcfile.new(path, overwrite=True) as mrc:
+                mrc.set_data(out)
+                ang = float(self.state.voxel_nm) * 10.0   # nm -> Angstrom
+                if ang > 0:
+                    mrc.voxel_size = (ang, ang, ang)
+                mrc.update_header_from_data()
+                mrc.update_header_stats()
+
+            p = Path(path)
+            self.lbl_mrc.setText(
+                f"Saved: {p.name}  [{out.shape}, {out.dtype}, "
+                f"{self.state.voxel_nm:.4f} nm/vox]")
+            log(f"MRC saved: {p.name}", params={"shape": out.shape,
+                                                "dtype": str(out.dtype),
+                                                "voxel_nm": self.state.voxel_nm})
+            show_info(f"Saved MRC: {p}")
         except Exception as e:
             show_error(str(e))
 
