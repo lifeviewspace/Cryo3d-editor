@@ -47,6 +47,7 @@ from dataclasses import dataclass, field
 import warnings
 import traceback
 import time
+import os
 import multiprocessing
 import copy
 import subprocess
@@ -90,7 +91,21 @@ except ImportError:
 # HARDWARE DETECTION
 # ====================================================================
 
-N_CPU = multiprocessing.cpu_count()
+def _detect_cpu_count():
+    """Number of CPUs actually available to this process.
+
+    On Linux (e.g. HPC clusters with cgroup/affinity limits or
+    resource oversubscription), os.sched_getaffinity reflects the real
+    allocation, unlike multiprocessing.cpu_count() which reports all
+    physical cores. Falls back to os.cpu_count() on macOS/Windows.
+    """
+    try:
+        return len(os.sched_getaffinity(0))
+    except AttributeError:
+        return os.cpu_count() or 1
+
+
+N_CPU = _detect_cpu_count()
 
 try:
     import cupy as cp
@@ -269,8 +284,14 @@ def log(msg, level="INFO", params=None, t0: float = None):
     print("  ".join(parts))
 
 
+_HARDWARE_CHECKED = False
+
 def check_hardware():
     import os, platform
+    global _HARDWARE_CHECKED
+    if _HARDWARE_CHECKED:
+        return
+    _HARDWARE_CHECKED = True
     print("\n" + "=" * 60)
     print("  HARDWARE CONFIGURATION")
     print("=" * 60)
@@ -286,8 +307,18 @@ def check_hardware():
     # Silicon and AMD GPUs. Setting the vispy backend to 'pyqt5' and
     # limiting the OpenGL context to software rendering fallback helps.
     if platform.system() == 'Darwin':
-        # Force vispy to use the PyQt5 backend (avoids Metal path issues)
-        os.environ.setdefault('VISPY_BACKEND', 'pyqt5')
+        # Match the vispy backend to the actually-installed Qt binding.
+        # Hardcoding 'pyqt5' breaks Qt6 environments (napari >= 0.5 / 0.7).
+        try:
+            from qtpy import API_NAME
+            _vispy_backend = {
+                'PyQt5': 'pyqt5', 'PySide2': 'pyside2',
+                'PyQt6': 'pyqt6', 'PySide6': 'pyside6',
+            }.get(API_NAME)
+            if _vispy_backend:
+                os.environ.setdefault('VISPY_BACKEND', _vispy_backend)
+        except Exception:
+            pass
         # Limit Metal command buffer count to reduce GPU queue pressure
         os.environ.setdefault('MTL_MAX_COMMAND_BUFFER_COUNT', '32')
         # Disable GPU-accelerated compositing for the Qt window
@@ -2840,8 +2871,11 @@ class AnimationTab(QWidget):
 class Cryo3DEditorWidget(QWidget):
     """Root widget — hosts the tab bar and all sub-tabs."""
 
-    def __init__(self, viewer: napari.Viewer):
+    def __init__(self, viewer: "napari.Viewer"):
         super().__init__()
+        # Safe to call here: env mitigations use setdefault and the
+        # hardware summary prints only once per process.
+        check_hardware()
         self.viewer = viewer
         self.state  = PluginState(viewer)
         self._init_ui()

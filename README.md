@@ -22,8 +22,8 @@ Requires Python ≥ 3.9 and a Qt backend (e.g. PyQt5).
 ### From source
 
 ```bash
-git clone https://github.com/lifeviewspace/Cryo3d-editor.git
-cd napari-cryo3d-editor
+git clone https://github.com/lifeviewspace/cryo3d-editor.git
+cd cryo3d-editor
 pip install -e .
 ```
 

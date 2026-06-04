@@ -9,8 +9,13 @@ imageio
 imageio-ffmpeg
 tifffile
 
-# A Qt backend is required by napari (install one):
-PyQt5
+# A Qt backend is required by napari. Do NOT hardcode one here:
+# napari already pulls in a compatible binding, and pinning PyQt5 would
+# break Qt6 environments (napari >= 0.5 / 0.7). If you need to install one
+# explicitly, pick the binding matching your napari version, e.g.:
+#   pip install PyQt5      # for older napari / Qt5
+#   pip install PyQt6      # for napari >= 0.5 / Qt6
+# Or simply: pip install "napari[all]"
 
 # Optional GPU acceleration (CUDA 12.x) — uncomment if you have an NVIDIA GPU:
 # cupy-cuda12x

@@ -34,13 +34,19 @@ dependencies = [
     "tifffile",
 ]
 
+# Note: a Qt backend (PyQt5/PySide2/PyQt6/PySide6) is required but is
+# intentionally NOT pinned here — napari pulls one in, and pinning Qt5
+# would break Qt6 environments (napari >= 0.5 / 0.7). Install via napari,
+# e.g. `pip install "napari[all]"`, or one of the extras below.
 [project.optional-dependencies]
 gpu = ["cupy-cuda12x"]
-all = ["pyqt5"]
+pyqt5 = ["PyQt5"]
+pyqt6 = ["PyQt6"]
+testing = ["pytest", "pytest-qt", "napari[all]"]
 
 [project.urls]
-"Bug Tracker" = "https://github.com/lifeviewspace/Cryo3d-editor/issues"
-"Source Code" = "https://github.com/lifeviewspace/Cryo3d-editor"
+"Bug Tracker" = "https://github.com/lifeviewspace/cryo3d-editor/issues"
+"Source Code" = "https://github.com/lifeviewspace/cryo3d-editor"
 
 [project.entry-points."napari.manifest"]
 napari-cryo3d-editor = "napari_cryo3d_editor:napari.yaml"
