@@ -32,3 +32,5 @@ htmlcov/
 *.tif
 *.tiff
 *.mp4
+# but keep the tutorial demo video (small, needed by USAGE.md)
+!images/tut/movie_tab_demo.mp4
