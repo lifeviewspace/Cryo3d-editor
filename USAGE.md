@@ -264,6 +264,14 @@ dimension-display button).*
 
 ![Keyframe preview](images/tut/movie_preview.gif)
 
+*Short preview of a keyframe animation.*
+
+▶️ **Full walkthrough:** [watch the complete Movie-tab demo](https://github.com/lifeviewspace/cryo3d-editor/raw/main/images/tut/movie_tab_demo.mp4)
+(`images/tut/movie_tab_demo.mp4`) — capturing keyframes, setting duration and
+interpolation, previewing and exporting.
+
+<video src="https://github.com/lifeviewspace/cryo3d-editor/raw/main/images/tut/movie_tab_demo.mp4" controls width="100%"></video>
+
 **Spin Movie** — one-click automatic 360° turntable.
 
 1. **1 ▸ Rotation Settings** — pick the axis (`Y`, `X`, `Z`) and output format.
