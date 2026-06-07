@@ -34,11 +34,6 @@ The plugin is **not on PyPI yet**, so install it from the source. Use an
 environment that already has napari, then:
 
 ```bash
-# From a local clone (recommended while editing):
-cd cryo3d-editor
-pip install -e .
-
-# …or directly from GitHub:
 pip install "git+https://github.com/lifeviewspace/cryo3d-editor.git"
 ```
 
