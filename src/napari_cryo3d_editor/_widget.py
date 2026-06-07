@@ -284,6 +284,52 @@ def log(msg, level="INFO", params=None, t0: float = None):
     print("  ".join(parts))
 
 
+# ====================================================================
+# MOVIE / FRAME HELPERS
+# ====================================================================
+
+def _normalize_frame(frame, target_hw=None):
+    """Return an RGB uint8 frame with even H/W, optionally matched to
+    target_hw=(H, W). Movie encoders (ffmpeg/H.264) require every frame
+    to share the same size and even dimensions, otherwise the writer
+    raises. napari screenshots can differ by a pixel between frames when
+    the canvas re-renders, which is the #1 cause of export failures."""
+    frame = np.asarray(frame)
+    if frame.ndim == 2:
+        frame = np.stack([frame] * 3, axis=-1)
+    if frame.shape[2] == 4:          # drop alpha
+        frame = frame[:, :, :3]
+    if frame.dtype != np.uint8:
+        frame = np.clip(frame, 0, 255).astype(np.uint8)
+
+    h, w = frame.shape[:2]
+    if target_hw is not None:
+        th, tw = target_hw
+        frame = frame[:th, :tw]
+        h, w = frame.shape[:2]
+        if h < th or w < tw:
+            pad = np.zeros((th, tw, 3), dtype=np.uint8)
+            pad[:h, :w] = frame
+            frame = pad
+    else:
+        eh, ew = h - (h % 2), w - (w % 2)
+        if (eh, ew) != (h, w):
+            frame = frame[:eh, :ew]
+    return np.ascontiguousarray(frame)
+
+
+def _open_movie_writer(path, fmt, fps):
+    """Create an imageio writer with player-compatible settings.
+    MP4 -> H.264 + yuv420p so QuickTime/VLC/browsers can play it."""
+    if fmt == "MP4":
+        return imageio.get_writer(
+            str(path), fps=fps, codec="libx264",
+            macro_block_size=2, pixelformat="yuv420p",
+            output_params=["-pix_fmt", "yuv420p"],
+        )
+    return imageio.get_writer(str(path), fps=max(10, fps), mode="I")
+
+
 _HARDWARE_CHECKED = False
 
 def check_hardware():
@@ -804,6 +850,7 @@ class SpinMovieController(QObject):
         self._orig_angles = None
         self._path       = None
         self._t0         = None
+        self._target_hw  = None
         self._timer      = QTimer(self)
         self._timer.timeout.connect(self._step)
 
@@ -821,11 +868,11 @@ class SpinMovieController(QObject):
         self._orig_angles = np.array(self.viewer.camera.angles).copy()
         self._frame_idx = 0
         self._abort = False
+        self._target_hw = None
         self._t0 = time.perf_counter()
         try:
             if self.fmt in ("MP4", "GIF"):
-                fps_val = self.fps if self.fmt == "MP4" else max(10, self.fps)
-                self._writer = imageio.get_writer(str(self._path), fps=fps_val)
+                self._writer = _open_movie_writer(self._path, self.fmt, self.fps)
             else:
                 self._path.mkdir(parents=True, exist_ok=True)
                 self._writer = None
@@ -859,9 +906,12 @@ class SpinMovieController(QObject):
             QApplication.processEvents()
 
             # Capture frame (safe: we are on the main/GUI thread)
-            frame = self.viewer.screenshot(canvas_only=True)
-            if frame.shape[2] == 4:
-                frame = frame[:, :, :3]
+            raw = self.viewer.screenshot(canvas_only=True)
+            if self._target_hw is None:
+                frame = _normalize_frame(raw)
+                self._target_hw = frame.shape[:2]
+            else:
+                frame = _normalize_frame(raw, self._target_hw)
 
             if self.fmt in ("MP4", "GIF"):
                 self._writer.append_data(frame)
@@ -1504,6 +1554,8 @@ class ColorTab(QWidget):
     def __init__(self, state: PluginState):
         super().__init__()
         self.state = state
+        self._pick_layer = None     # layer whose selected_label we listen to
+        self._syncing = False       # guard against canvas<->list feedback loops
         self._init_ui()
 
     def _init_ui(self):
@@ -1537,7 +1589,15 @@ class ColorTab(QWidget):
         self.list_labels.setStyleSheet(
             f"background:{BG_DARK};color:{TEXT_MAIN};border:1px solid {BORDER};"
             f"border-radius:3px;")
+        self.list_labels.itemSelectionChanged.connect(self._on_list_selection)
         l2.addWidget(self.list_labels)
+        self.chk_highlight = QCheckBox("Highlight picked label on canvas")
+        self.chk_highlight.setChecked(True)
+        self.chk_highlight.setStyleSheet(f"color:{TEXT_MAIN};")
+        self.chk_highlight.toggled.connect(self._on_highlight_toggled)
+        l2.addWidget(self.chk_highlight)
+        l2.addWidget(_info("Tip: press 5 (picker) and click a membrane — its "
+                           "label is selected here and highlighted on the canvas"))
         g2.setLayout(l2)
         layout.addWidget(g2)
 
@@ -1621,9 +1681,86 @@ class ColorTab(QWidget):
         name = self.combo_layer.currentText()
         return self.state.get_labels_layer(name) if name and name != "—" else None
 
+    def _connect_pick(self, layer):
+        """Listen to the layer's selected_label so the napari picker (key 5)
+        drives the list selection + canvas highlight."""
+        if self._pick_layer is layer:
+            return
+        if self._pick_layer is not None:
+            try:
+                self._pick_layer.events.selected_label.disconnect(self._on_label_picked)
+            except Exception:
+                pass
+        self._pick_layer = layer
+        if layer is not None:
+            try:
+                layer.events.selected_label.connect(self._on_label_picked)
+            except Exception:
+                pass
+
+    def _on_label_picked(self, event=None):
+        if self._syncing:
+            return
+        layer = self._get_layer()
+        if layer is None:
+            return
+        try:
+            val = int(layer.selected_label)
+        except Exception:
+            return
+        if val <= 0:
+            return
+        self._syncing = True
+        try:
+            self.list_labels.clearSelection()
+            for i in range(self.list_labels.count()):
+                it = self.list_labels.item(i)
+                if it.data(Qt.UserRole) == val:
+                    it.setSelected(True)
+                    self.list_labels.setCurrentItem(it)
+                    self.list_labels.scrollToItem(it)
+                    break
+            if self.chk_highlight.isChecked():
+                layer.show_selected_label = True
+            self.status_label.setText(f"Picked label {val}")
+        finally:
+            self._syncing = False
+
+    def _on_list_selection(self):
+        if self._syncing:
+            return
+        layer = self._get_layer()
+        if layer is None:
+            return
+        labels = self._get_selected_labels()
+        if not labels:
+            return
+        self._syncing = True
+        try:
+            layer.selected_label = int(labels[0])
+            if self.chk_highlight.isChecked():
+                layer.show_selected_label = True
+        except Exception:
+            pass
+        finally:
+            self._syncing = False
+
+    def _on_highlight_toggled(self, checked):
+        layer = self._get_layer()
+        if layer is None:
+            return
+        try:
+            if not checked:
+                layer.show_selected_label = False        # show all labels again
+            elif self._get_selected_labels():
+                layer.show_selected_label = True
+        except Exception:
+            pass
+
     def _refresh_labels(self):
         self.list_labels.clear()
         layer = self._get_layer()
+        self._connect_pick(layer)
         if not layer:
             return
         _uniq = np.unique(layer.data)
@@ -2882,20 +3019,30 @@ class AnimationTab(QWidget):
         if not path:
             return
         frames = self._generate_frames()
+        if not frames:
+            return show_warning("No frames to export")
         fps = self.spin_fps.value()
         self.kf_progress.setVisible(True)
         self.kf_progress.setValue(0)
         self.status_label.setText("Exporting…")
+        log("KeyframeMovie EXPORT START",
+            params={"frames": len(frames), "fmt": fmt, "fps": fps})
+        writer = None
+        target_hw = None
+        t0 = time.perf_counter()
         try:
             if fmt in ("MP4", "GIF"):
-                writer = imageio.get_writer(path, fps=fps)
+                writer = _open_movie_writer(path, fmt, fps)
             for i, kf in enumerate(frames):
                 self._apply_state(kf)
                 QApplication.processEvents()
                 QThread.msleep(30)
-                frame = self.state.viewer.screenshot(canvas_only=True)
-                if frame.shape[2] == 4:
-                    frame = frame[:, :, :3]
+                raw = self.state.viewer.screenshot(canvas_only=True)
+                if target_hw is None:
+                    frame = _normalize_frame(raw)
+                    target_hw = frame.shape[:2]
+                else:
+                    frame = _normalize_frame(raw, target_hw)
                 if fmt in ("MP4", "GIF"):
                     writer.append_data(frame)
                 else:
@@ -2906,13 +3053,25 @@ class AnimationTab(QWidget):
                     else:
                         imageio.imwrite(str(p / f"frame_{i:04d}.png"), frame)
                 self.kf_progress.setValue(int(100 * (i + 1) / len(frames)))
-            if fmt in ("MP4", "GIF"):
+                QApplication.processEvents()
+            if writer is not None:
                 writer.close()
+                writer = None
+            log("KeyframeMovie EXPORT DONE", t0=t0, params={"output": path})
             self.status_label.setText(f"Exported: {Path(path).name}")
             show_info(f"Movie exported: {path}")
         except Exception as e:
-            show_error(str(e))
+            tb = traceback.format_exc()
+            log("KeyframeMovie EXPORT FAILED", level="ERROR")
+            print(tb)
+            self.status_label.setText("Export failed — see terminal log")
+            show_error(f"Movie export failed: {e}\n(full traceback in terminal)")
         finally:
+            if writer is not None:
+                try:
+                    writer.close()
+                except Exception:
+                    pass
             self.kf_progress.setVisible(False)
 
 
